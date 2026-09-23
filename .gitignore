@@ -14,8 +14,6 @@ pytest-cache-files-*/
 build/
 
 # 产出（可随时用 `uv run ratema all` 重新生成）
-output/
-data/csv/
 
 # Excel 临时文件
 ~$*.xlsx
