@@ -16,25 +16,62 @@
 uv sync
 
 # 2) 一键跑通：Excel -> CSV -> 回测 -> 阈值扫描 -> 图表
-uv run ratema all
+uv run python run.py
 
-# 3) 看结果
-#    output/report.md    完整中文报告
-#    output/charts/      图表
+# 3) 看结果（产出落在 <outdir>/<run_name>/，默认 output/default/）
+#    output/default/report.md    完整中文报告
+#    output/default/charts/      图表
 ```
 
 就这两条命令。`uv` 会在项目内建好隔离环境，依赖版本由 `uv.lock` 锁定，换台机器结果一致。
 
-### 常见任务
+### 改参数只改一个文件
+
+**所有可调参数都集中在 `run.py` 顶部的 `CONFIG` 字典里**，改完直接运行即可，
+不需要记命令行参数：
+
+```python
+CONFIG = {
+    "run_name": "5bp_多空",  # ← 输出文件夹名，产出写到 output/5bp_多空/
+    "tol_mode": "bp",  # 重合阈值单位：基点（推荐，不易搞错量级）
+    "tol": 5.0,  # 5bp 以内视为两线重合
+    "direction": "long_short",  # 多空双向
+    "steps": {
+        "convert": True,
+        "backtest": True,
+        "composite": True,
+        "journal": True,
+        "sweep": True,
+    },  # 关掉不需要的步骤会快很多
+}
+```
+
+也可以临时覆盖输出文件夹名，不用改文件：
+
+```bash
+uv run python run.py 我的方案A     # 产出写到 output/我的方案A/
+```
+
+Windows 下直接**双击 `run.bat`** 即可（它调用 `run.py`，参数以 `run.bat 方案名` 形式透传）。
+首次运行不确定参数怎么填时，建议先只开 `backtest`、关掉 `sweep` 和 `charts` 试跑。
+
+### 命令行用法（可选）
+
+上面的 `run.py` 底层调用的是同一套 CLI 子命令，参数完全一致；
+习惯命令行的可以直接用：
 
 | 我想…… | 命令 |
 | --- | --- |
+| 一键跑通（等价于 `run.py` 全开） | `uv run ratema all` |
 | 跑默认回测（阈值 0） | `uv run ratema backtest` |
 | 用 5bp 作为重合阈值 | `uv run ratema backtest --tol-mode bp --tol 5` |
 | 换均线（如 10/60 日） | `uv run ratema backtest --short 10 --long 60` |
 | 只看某段时间 | `uv run ratema backtest --start 2020-01-01 --end 2024-12-31` |
 | 改交易成本（如单边 5bp） | `uv run ratema backtest --cost-bps 5` |
+| 改初始资金（仅影响净值绝对水平） | `uv run ratema backtest --initial-capital 1000000` |
 | 成本按"往返合计"理解 | `uv run ratema backtest --cost-bps 2 --cost-mode round_trip` |
+| **只做空** | `uv run ratema backtest --direction short_only` |
+| **多空双向** | `uv run ratema backtest --direction long_short` |
 | 只跑某一个利率指标 | `uv run ratema backtest --rate-cols DR007` |
 | **每利率单独测 + 五利率等权综合** | `uv run ratema composite --tol-mode bp --tol 5` |
 | 换综合方式（全票 / 任一） | `uv run ratema composite --mode unanimous`（或 `any`） |
@@ -56,6 +93,38 @@ uv run ratema all
 
 **重复运行是安全的**：`convert` 会覆盖 `data/csv/`，`backtest` 会覆盖 `output/<tag>/`，
 都是幂等的，不会累积垃圾。
+
+### 方向对比图（独立入口）
+
+`compare_directions.py` 把**同一套信号**在三种交易方向下的净值，和买入持有基准
+画到**同一张图**上。默认出 1 + N 张（N = 利率指标个数）：
+
+- `compare_directions.png` —— 五利率**等权综合**信号
+- `compare_directions_DR001.png`、`_R001.png`、`_DR007.png`、`_R007.png`、
+  `_M0017139.png` —— **每个利率单独**一张，用的是该利率自己的信号
+
+```bash
+uv run python compare_directions.py                    # 综合 + 每个利率各一张
+uv run python compare_directions.py 5bp方案             # 换输出文件夹名
+uv run python compare_directions.py --only-indicators   # 只要每个利率那几张
+uv run python compare_directions.py --only-composite    # 只要综合那一张
+uv run python compare_directions.py --rates DR007,R007  # 只出指定利率
+uv run python compare_directions.py --log               # 纵轴取对数
+uv run python compare_directions.py --indicator-drawdown # 每个利率也出回撤附图
+```
+
+每张图的四条曲线：**多空双向**（主线）、**仅做多**、**仅做空**、**基准 买入持有**。
+另外产出 `compare_by_rate.csv` / `.md` —— 按「指标 × 方向」排列的对照表，
+可以直接看出哪个利率最适合哪种方向。
+
+这个文件刻意不依赖 `run.py`，参数在它自己的 `CONFIG` 里改，可单独运行。
+**单利率图与综合图走的是同一条代码路径**：单利率只是把「只含该指标一个元素」的
+列表喂给同一套综合逻辑。N=1 时 `score = ±1`，与「该指标自己的 signal_eff」逐日等价，
+所以不需要另写一套逻辑，也自动继承了同一套对齐校验（测试里逐指标 × 逐方向
+与 `run_single` 比对，误差为 0）。
+
+三条策略曲线共用相同的信号与相同的评估区间（代码里会显式校验对齐并直接报错），
+所以图上的差异**只来自交易方向**，能直接看出「做空那一段贡献了多少」。
 
 ---
 
@@ -106,6 +175,28 @@ uv run ratema all
 
 ### 2.3 多头策略与交易细节
 
+**交易方向**由 `--direction` 决定（默认 `long_only`）：
+
+| 方向 | 信号 +1（看多债券） | 信号 −1（看空债券） |
+| --- | --- | --- |
+| `long_only`（默认） | 持有多头 | 空仓 |
+| `short_only` | 空仓 | **持有空头** |
+| `long_short` | 持有多头 | **持有空头**（始终有仓位） |
+
+> 原始策略是「卖出（有持仓时）或继续空仓（无持仓时）」，对应 `long_only`。
+
+**做空的会计口径**（与做多镜像，1 倍名义敞口）：
+
+```
+建空：名义 N = 现金/(1+c)，收到 N(1−c)，建仓后净值 = 现金/(1+c)   ← 与建多对称
+持有：净值随标的价格反向变动（标的跌 10%，1 倍空头赚 10%）
+平空：回购支付 |份额|·P·(1+c)
+```
+
+方向切换（多↔空）拆成「先平后建」两笔，两笔成本相加。
+**空头亏损无上限**：标的翻倍时 1 倍空头净值归零，继续上涨则转负
+（真实交易中会先被强平，本回测不含保证金/强平逻辑）。
+
 - T 日标记 **+1** → T+1 日**买入**（T 日无持仓）或**继续持有**（T 日有持仓）
 - T 日标记 **-1** → T+1 日**卖出**（T 日有持仓）或**继续空仓**（T 日无持仓）
 - **交易价格**：收盘价
@@ -145,6 +236,33 @@ uv run ratema all
 - 五条均线全部**跑赢买入持有基准**（年化超额 +0.37% ~ +0.76%）；
 - **最大回撤显著更浅**（约 -4.8% vs 基准 -9.75%），是这套择时规则的主要价值来源；
 - 交易成本年化拖累约 0.11% ~ 0.22%，`DR007` 表现最好、`R007` 最弱。
+
+### 分年度拆解与胜率口径
+
+除全区间外，报告第 4.1 节、`annual_breakdown.csv` 与 `journal_annual.csv`
+都会**按自然年**列示策略与基准的对比。
+
+**胜率有四个口径，含义完全不同，不要混用：**
+
+| 口径 | 定义 | 本样本（5 指标等权，tol=0） |
+| --- | --- | --- |
+| 策略日胜率 | 策略当日收益 > 0 的天数占比 | **29.89%** |
+| 基准日胜率 | 基准当日收益 > 0 的天数占比 | 52.22% |
+| 相对胜率 | 策略当日收益**跑赢基准**的天数占比 | 38.07% |
+| 交易胜率 | 已平仓往返交易中盈利的比例 | 60.38% |
+
+> ⚠️ **策略日胜率（29.89%）远低于基准（52.22%），这不是 bug**：
+> 空仓日收益恰为 0，不计入胜率分子。这类趋势型策略的典型画像是
+> **「低胜率 + 高盈亏比」**——靠少数大跌日避开亏损取胜，而非靠多数交易日占优。
+> 判断有效性应看**相对胜率、超额收益与回撤**，而不是日胜率。
+
+逐年结果也很说明问题：**16 个年度里有 7 年跑输基准**，但总超额仍有 +10.72%——
+因为赢的年份赢得多（2013 年 +3.38%、2017 年 +4.30%），输的年份输得少。
+详见 `output/report.md` 第 4.1 节，以及图 `output/charts/09_annual_breakdown.png`
+（年度收益对比 / 累计超额 / 逐年胜率 / 逐年回撤，四联图）。
+
+> 分年度交易胜率往往只基于个位数笔交易，噪声很大；
+> 图中用**点的大小编码交易笔数**，避免把小样本当成可靠信号。
 
 ### 阈值（tol）的影响
 
@@ -217,6 +335,7 @@ uv run ratema backtest \
 | `summary.csv` | 各指标核心绩效汇总 |
 | `metrics.json` | 全部绩效指标与运行参数 |
 | `evaluation_window.csv` | 各指标评估窗口与起算口径 |
+| `annual_breakdown.csv` | **分年度收益与胜率**（逐指标，含全区间行） |
 | `spread_calibration.csv` | 阈值标定（`\|spread\|` 分位数） |
 | `equity_curves.csv` | 所有策略 + 基准净值曲线 |
 | `equity/<指标>.csv` | 单指标逐日净值 / 回撤 |
@@ -237,6 +356,8 @@ uv run ratema backtest \
 | `05_annual_returns.png` | 年度收益热力图（行=指标，列=年份） |
 | `06_signal_mechanics_<指标>.png` | 信号机理：利率双均线 / spread 与重合带 / 实际仓位 |
 | `07_tol_sweep.png` | 不同阈值下的净值（由 `sweep` 生成） |
+| `08_composite.png` | 等权综合：净值 + 投票结构 + 仓位对比（由 `composite` 生成） |
+| `09_annual_breakdown.png` | **分年度四联图**：年度收益对比 / 累计超额 / 逐年胜率 / 逐年回撤 |
 
 ```bash
 # 指定用哪个指标、哪个时间段画信号机理图
@@ -251,6 +372,7 @@ uv run ratema backtest --signal-series DR001 --signal-window 2020-01-01:2022-12-
 | --- | --- |
 | `output/journal/journal.csv` | 逐日全量：信号 / 票数 / 仓位 / 动作 / 行情 / 净值 / 回撤 |
 | `output/journal/journal_events.csv` | 动作流水：只含建仓、平仓 |
+| `output/journal/journal_annual.csv` | 分年度收益与胜率 |
 | `output/journal/journal.md` | 人读日志：概览 + 动作流水 + 最近 N 日 |
 
 ```bash

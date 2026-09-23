@@ -28,7 +28,7 @@ COMPOSITE_LABEL = "COMPOSITE"
 
 
 def _pick_frame(args, dataset, index_col, rate_cols, signal_cfg, backtest_cfg):
-    """返回 (逐日明细 DataFrame, 序列名, 补充说明)。"""
+    """返回 (逐日明细, 成交流水, 序列名, 补充说明)。"""
     if args.series.upper() == COMPOSITE_LABEL:
         from ..pipeline import run_single
 
@@ -55,7 +55,12 @@ def _pick_frame(args, dataset, index_col, rate_cols, signal_cfg, backtest_cfg):
             end=args.end,
         )
         note = f"等权综合（{args.mode} / 投票源 {args.vote_source}，共 {len(rate_cols)} 个指标）"
-        return result.composite_frame, COMPOSITE_LABEL, note
+        trades = (
+            result.composite_backtest.trades_frame
+            if result.composite_backtest is not None
+            else None
+        )
+        return result.composite_frame, trades, COMPOSITE_LABEL, note
 
     if args.series not in rate_cols:
         raise SystemExit(
@@ -72,7 +77,7 @@ def _pick_frame(args, dataset, index_col, rate_cols, signal_cfg, backtest_cfg):
         start=args.start,
         end=args.end,
     )
-    return res.frame, args.series, dataset.display_name(args.series)
+    return res.frame, res.backtest.trades_frame, args.series, dataset.display_name(args.series)
 
 
 def cmd_journal(args: argparse.Namespace) -> int:
@@ -83,11 +88,11 @@ def cmd_journal(args: argparse.Namespace) -> int:
     signal_cfg = make_signal_config(args)
     backtest_cfg = make_backtest_config(args)
 
-    frame, series_name, note = _pick_frame(
+    frame, trades, series_name, note = _pick_frame(
         args, dataset, index_col, rate_cols, signal_cfg, backtest_cfg
     )
 
-    journal = build_journal(frame, series=series_name, index_col=index_col)
+    journal = build_journal(frame, series=series_name, index_col=index_col, trades=trades)
 
     rule("每日交易日志")
     print(f"  数据源      : {dataset.source}")
@@ -102,6 +107,17 @@ def cmd_journal(args: argparse.Namespace) -> int:
         f"（基准 {journal.summary['final_benchmark']:.4f}）"
     )
     rule()
+
+    if not args.quiet and not journal.annual.empty:
+        from ..metrics import ANNUAL_COLUMNS
+        from ..render import format_table
+
+        print("【分年度收益与胜率（对比基准）】")
+        print(format_table(journal.annual, ANNUAL_COLUMNS).to_string(index=False))
+        print()
+        print("  注：空仓日收益为 0 不计入胜率，故策略日胜率通常低于基准；")
+        print("      该类策略靠「低胜率 + 高盈亏比」取胜，应看相对胜率与超额。")
+        print()
 
     if not args.quiet:
         show = journal.events if args.events_only else journal.tail(args.tail)
@@ -142,6 +158,21 @@ def cmd_journal(args: argparse.Namespace) -> int:
 
     outdir = output_dir(args) / "journal"
     written = write_journal(journal, outdir, tail=args.tail)
+
+    if getattr(args, "charts", True) and not journal.annual.empty:
+        from ..charts import plot_annual_breakdown, setup_style
+
+        setup_style()
+        written.append(
+            str(
+                plot_annual_breakdown(
+                    journal.annual,
+                    output_dir(args) / "charts",
+                    title="分年度收益与胜率",
+                    subtitle=f"{series_name} · 阈值 {signal_cfg.describe_tol()}",
+                )
+            )
+        )
 
     if args.append:
         append_path = Path(args.append)

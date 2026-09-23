@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .io_utils import COLUMNS_META_FILE
+from .metrics import annual_breakdown
 from .pipeline import RunResult
 from .render import (
     SWEEP_COLUMNS,
@@ -153,6 +154,18 @@ def write_run(run: RunResult, outdir: str | Path) -> list[str]:
     cpath = outdir / "spread_calibration.csv"
     _write_csv(calib, cpath)
     written.append(str(cpath))
+
+    # ---- 分年度收益与胜率 ----
+    annual_frames = []
+    for res in run.results:
+        t = annual_breakdown(res.frame, res.backtest.trades_frame)
+        t.insert(0, "series", res.series)
+        t.insert(1, "series_name", res.display_name)
+        annual_frames.append(t)
+    if annual_frames:
+        apath = outdir / "annual_breakdown.csv"
+        _write_csv(pd.concat(annual_frames, ignore_index=True), apath)
+        written.append(str(apath))
 
     # ---- 评估窗口与起算口径 ----
     win_rows = []

@@ -13,22 +13,27 @@ import ratema
 
 PKG = Path(ratema.__file__).parent
 
-#: L0 算法层：不允许依赖任何其他内部模块
-LEAF_MODULES = ["io_utils", "indicators", "backtest", "metrics", "charts"]
+#: L0 算法层中必须保持「零内部依赖」的核心模块。
+#: 这几个模块是交叉验证（scripts/cross_check.py）直接调用的对象，
+#: 一旦引入内部依赖就无法被独立重算。
+#: （metrics / charts 不在其中：它们依赖下游的纯计算，且是惰性导入。）
+LEAF_MODULES = ["io_utils", "indicators", "backtest"]
 
 #: 允许的内部依赖方向（谁 -> 可以 import 谁）
 ALLOWED_DEPS = {
     "io_utils": set(),
     "indicators": set(),
     "backtest": set(),
-    "metrics": set(),
-    "charts": set(),
+    # metrics 复用 backtest 的成交动作常量（BUY/SELL/SHORT/COVER），
+    # 避免在多空两个方向下重复定义、写漏分支
+    "metrics": {"backtest"},
+    "charts": {"metrics"},
     "pipeline": {"io_utils", "indicators", "backtest", "metrics"},
     "composite": {"io_utils", "indicators", "backtest", "metrics"},
     "daily": {"io_utils", "indicators"},
-    "journal": {"metrics"},
-    "render": {"indicators", "pipeline", "composite"},
-    "writers": {"io_utils", "pipeline", "render"},
+    "journal": {"metrics", "render"},
+    "render": {"indicators", "metrics", "pipeline", "composite"},
+    "writers": {"io_utils", "metrics", "pipeline", "render"},
     "parser": {
         "backtest",
         "composite",
@@ -58,10 +63,13 @@ ALLOWED_DEPS = {
         "commands._shared",
     },
     "commands.journal": {
+        "charts",
         "composite",
         "io_utils",
         "journal",
+        "metrics",
         "pipeline",
+        "render",
         "commands._shared",
     },
     "commands.sweep": {

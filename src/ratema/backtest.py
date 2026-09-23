@@ -28,8 +28,81 @@ import pandas as pd
 CostMode = Literal["per_side", "round_trip"]
 COST_MODES: tuple[str, ...] = ("per_side", "round_trip")
 
+#: 交易方向
+Direction = Literal["long_only", "short_only", "long_short"]
+DIRECTIONS: tuple[str, ...] = ("long_only", "short_only", "long_short")
+
+DIRECTION_HELP: dict[str, str] = {
+    "long_only": "只做多：信号 +1 → 持有多头，-1 → 空仓（默认，等价于原始策略）",
+    "short_only": "只做空：信号 -1 → 持有空头，+1 → 空仓",
+    "long_short": "多空双向：信号 +1 → 持有多头，-1 → 持有空头（始终有仓位）",
+}
+
 BUY = "BUY"
 SELL = "SELL"
+SHORT = "SHORT"
+COVER = "COVER"
+
+
+def _position_state(units: float) -> int:
+    """由持仓份额判定状态：+1 多头 / 0 空仓 / -1 空头。
+
+    **必须用精确的 0 比较，不能用绝对 epsilon。**
+    引擎在平仓分支里显式把 ``units`` 置为 ``0.0``，不存在浮点残渣；
+    而绝对阈值会随本金尺度失效——``initial_capital=1e-12`` 时持仓份额
+    约 1e-14，会被误判为空仓，于是每个交易日都重复「建仓」，
+    最终净值恒为初始值、年化收益变成 NaN（静默失效，不报错）。
+    """
+    if units > 0.0:
+        return 1
+    if units < 0.0:
+        return -1
+    return 0
+
+
+def _has_opinion(signal: object) -> bool:
+    """信号是否给出了明确观点（非 NaN、非 0）。"""
+    if signal is None:
+        return False
+    try:
+        value = float(signal)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(value) and value != 0.0)
+
+
+#: 开仓类动作（建立新的一段持仓）
+OPEN_ACTIONS: tuple[str, ...] = (BUY, SHORT)
+#: 平仓类动作（结束一段持仓，带 pnl_pct）
+CLOSE_ACTIONS: tuple[str, ...] = (SELL, COVER)
+
+
+def map_target_position(signal: float, direction: str) -> int:
+    """把 ±1 的交易信号映射为**目标仓位**。
+
+    ============  ===========  ============  ============
+    信号           long_only    short_only    long_short
+    ============  ===========  ============  ============
+    +1（看多债券）  +1 持有多头   0 空仓        +1 持有多头
+    -1（看空债券）  0 空仓        -1 持有空头   -1 持有空头
+    0 / NaN        0 空仓        0 空仓        0 空仓
+    ============  ===========  ============  ============
+    """
+    if signal is None:
+        return 0
+    try:
+        s = float(signal)
+    except (TypeError, ValueError):
+        return 0
+    if not np.isfinite(s) or s == 0.0:
+        return 0
+    if direction == "long_only":
+        return 1 if s > 0 else 0
+    if direction == "short_only":
+        return -1 if s < 0 else 0
+    if direction == "long_short":
+        return 1 if s > 0 else -1
+    raise ValueError(f"未知 direction: {direction!r}，应为 {DIRECTIONS} 之一")
 
 
 @dataclass(frozen=True)
@@ -42,6 +115,9 @@ class BacktestConfig:
     cost_mode: str = "per_side"
     """``per_side``：cost_bps 为单边成本；``round_trip``：cost_bps 为往返合计。"""
 
+    direction: str = "long_only"
+    """交易方向：``long_only`` / ``short_only`` / ``long_short``。"""
+
     initial_capital: float = 1.0
     annualization: int = 252
     risk_free: float = 0.0
@@ -49,6 +125,8 @@ class BacktestConfig:
     def __post_init__(self) -> None:
         if self.cost_mode not in COST_MODES:
             raise ValueError(f"cost_mode 必须是 {COST_MODES} 之一")
+        if self.direction not in DIRECTIONS:
+            raise ValueError(f"direction 必须是 {DIRECTIONS} 之一，收到 {self.direction!r}")
         if self.cost_bps < 0:
             raise ValueError("cost_bps 必须非负")
         if self.initial_capital <= 0:
@@ -66,18 +144,22 @@ class BacktestConfig:
 
     def describe(self) -> str:
         if self.cost_mode == "per_side":
-            return (
+            cost = (
                 f"单边 {self.cost_bps:g}bp（万分之{self.cost_bps:g}），"
                 f"双边合计 {2 * self.cost_bps:g}bp"
             )
-        return (
-            f"往返合计 {self.cost_bps:g}bp（万分之{self.cost_bps:g}），单边 {self.cost_bps / 2:g}bp"
-        )
+        else:
+            cost = (
+                f"往返合计 {self.cost_bps:g}bp（万分之{self.cost_bps:g}），"
+                f"单边 {self.cost_bps / 2:g}bp"
+            )
+        return f"{cost}；方向 {self.direction}"
 
     def to_dict(self) -> dict[str, Any]:
         data = {
             "cost_bps": self.cost_bps,
             "cost_mode": self.cost_mode,
+            "direction": self.direction,
             "initial_capital": self.initial_capital,
             "annualization": self.annualization,
             "risk_free": self.risk_free,
@@ -163,6 +245,74 @@ class BacktestResult:
         return float(sum(t.cost for t in self.trades))
 
 
+def _rebalance(
+    units: float,
+    cash: float,
+    target: int,
+    price: float,
+    c: float,
+) -> tuple[float, float, float, list[tuple[str, float, float, float, float, float]]]:
+    """把持仓从 ``units`` 调整到 ``target`` 对应的仓位。
+
+    返回 ``(units, cash, total_cost, events)``；``events`` 的每项为
+    ``(action, units_traded, notional, cost, equity_after)``。
+
+    会计口径（只做多的分支与旧版**完全一致**，做空为镜像）
+    --------------------------------------------------------
+    建多：花光现金，``units = cash / (P(1+c))``，建仓后净值 ``= cash/(1+c)``
+    平多：``proceeds = units·P(1-c)``
+    建空：名义 ``N = cash/(1+c)``，收到 ``N(1-c)``，``units = -N/P``，
+          建仓后净值 ``= cash - N·c = cash/(1+c)``（与建多对称）
+    平空：回购支付 ``|units|·P(1+c)``
+
+    方向切换（多↔空）拆成「先平后建」两笔，成本自然叠加。
+    """
+    events: list[tuple[str, float, float, float, float, float]] = []
+    total_cost = 0.0
+
+    state = _position_state(units)
+    if target == state:
+        return units, cash, 0.0, events
+
+    # ---- 1) 平掉现有仓位 ----
+    if state == 1:
+        eq_before = cash + units * price
+        gross = units * price
+        cost = gross * c
+        cash += gross - cost
+        total_cost += cost
+        units = 0.0
+        events.append((SELL, gross / price, gross, cost, eq_before, cash))
+    elif state == -1:
+        eq_before = cash + units * price
+        owed = -units * price
+        cost = owed * c
+        cash -= owed + cost
+        total_cost += cost
+        units = 0.0
+        events.append((COVER, owed / price, owed, cost, eq_before, cash))
+
+    # ---- 2) 建立目标仓位 ----
+    if target == 1:
+        eq_before = cash
+        units = cash / (price * (1.0 + c))
+        notional = units * price
+        cost = eq_before - notional
+        cash = 0.0
+        total_cost += cost
+        events.append((BUY, units, notional, cost, eq_before, notional))
+    elif target == -1:
+        eq_before = cash
+        notional = cash / (1.0 + c)
+        cost = notional * c
+        cash = eq_before + notional * (1.0 - c)
+        units = -notional / price
+        total_cost += cost
+        events.append((SHORT, units, notional, cost, eq_before, cash + units * price))
+
+    return units, cash, total_cost, events
+
+
 def run_backtest(
     dates: pd.Series | pd.Index,
     prices: pd.Series,
@@ -196,6 +346,17 @@ def run_backtest(
     if len(dates) == 0:
         raise ValueError("输入为空")
 
+    # 本引擎只支持「二元多空仓」：信号必须是 -1 / +1（0 表示无观点，NaN 表示未就绪）。
+    # 任何其他取值（例如把分数直接当仓位用）都会被静默忽略，导致回测结果无意义，
+    # 因此这里直接报错。
+    valid = signal_eff.dropna()
+    unexpected = sorted(set(valid.unique()) - {-1.0, 0.0, 1.0})
+    if unexpected:
+        raise ValueError(
+            f"signal_eff 只接受 -1 / 0 / +1（0 表示不操作），收到 {unexpected}。"
+            f"本引擎不支持分数仓位；若想按分数定仓，需要另写按比例调仓的执行逻辑。"
+        )
+
     prices = prices.ffill()
     if prices.isna().any():
         raise ValueError("价格序列存在前导缺失值，无法回测")
@@ -217,73 +378,67 @@ def run_backtest(
 
     trades: list[Trade] = []
     round_trip_id = 0
-    entry_cash: float | None = None
+    entry_equity: float | None = None
     entry_index: int | None = None
+    entry_side: int = 0
 
     for t in range(n):
         price = float(prices.iloc[t])
-        sig = actionable.iloc[t]
+        raw_sig = actionable.iloc[t]
 
-        if sig == 1.0 and units == 0.0:
-            # ---- 买入 ----
-            cash_before = cash
-            units = cash / (price * (1.0 + c))
-            traded_units = units
-            notional = units * price
-            cost = cash_before - notional
-            cash = 0.0
-            cost_paid[t] = cost
-            round_trip_id += 1
-            entry_cash = cash_before
-            entry_index = t
-            trades.append(
-                Trade(
-                    date=dates.iloc[t],
-                    action=BUY,
-                    price=price,
-                    units=traded_units,
-                    notional=notional,
-                    cost=cost,
-                    equity_after=notional,
-                    round_trip_id=round_trip_id,
-                )
-            )
-            # 无成本镜像
-            units_gross = cash_gross / price
-            cash_gross = 0.0
-        elif sig == -1.0 and units > 0.0:
-            # ---- 卖出 ----
-            gross = units * price
-            cost = gross * c
-            proceeds = gross - cost
-            cash = proceeds
-            cost_paid[t] = cost
-            holding_days = (t - entry_index) if entry_index is not None else None
-            pnl = (proceeds / entry_cash - 1.0) if entry_cash else None
-            trades.append(
-                Trade(
-                    date=dates.iloc[t],
-                    action=SELL,
-                    price=price,
-                    units=units,
-                    notional=gross,
-                    cost=cost,
-                    equity_after=proceeds,
-                    round_trip_id=round_trip_id,
-                    pnl_pct=pnl,
-                    holding_days=holding_days,
-                )
-            )
-            units = 0.0
-            entry_cash = None
-            entry_index = None
-            # 无成本镜像
-            cash_gross = units_gross * price
-            units_gross = 0.0
+        # 无观点（NaN / 0）时**不操作**，维持当前仓位，
+        # 而不是强制平仓——否则均线未就绪期会把已有仓位打掉。
+        target = map_target_position(raw_sig, cfg.direction) if _has_opinion(raw_sig) else None
+
+        state = _position_state(units)
+        if target is not None and target != state:
+            units, cash, day_cost, events = _rebalance(units, cash, target, price, c)
+            units_gross, cash_gross, _, _ = _rebalance(units_gross, cash_gross, target, price, 0.0)
+            cost_paid[t] = day_cost
+
+            for action, traded, notional, cost, eq_before, eq_after in events:
+                if action in OPEN_ACTIONS:
+                    round_trip_id += 1
+                    # 往返收益以「开仓前」净值为基准，否则会漏掉建仓成本
+                    entry_equity = eq_before
+                    entry_index = t
+                    entry_side = 1 if action == BUY else -1
+                    trades.append(
+                        Trade(
+                            date=dates.iloc[t],
+                            action=action,
+                            price=price,
+                            units=traded,
+                            notional=notional,
+                            cost=cost,
+                            equity_after=eq_after,
+                            round_trip_id=round_trip_id,
+                        )
+                    )
+                else:
+                    holding_days = (t - entry_index) if entry_index is not None else None
+                    pnl = (eq_after / entry_equity - 1.0) if entry_equity else None
+                    trades.append(
+                        Trade(
+                            date=dates.iloc[t],
+                            action=action,
+                            price=price,
+                            units=traded,
+                            notional=notional,
+                            cost=cost,
+                            equity_after=eq_after,
+                            round_trip_id=round_trip_id,
+                            pnl_pct=pnl,
+                            holding_days=holding_days,
+                        )
+                    )
+                    entry_equity = None
+                    entry_index = None
+                    entry_side = 0
 
         equity[t] = cash + units * price
         equity_gross[t] = cash_gross + units_gross * price
-        position[t] = 1 if units > 0.0 else 0
+        position[t] = _position_state(units)
 
     frame = pd.DataFrame(
         {
@@ -298,14 +453,16 @@ def run_backtest(
         }
     )
 
-    # 未平仓交易收尾：按最后一日收盘价盯市，不扣卖出成本
+    # 未平仓交易收尾：按最后一日收盘价盯市，不计平仓成本
     open_trip = None
-    if units > 0.0 and entry_cash is not None:
+    if _position_state(units) != 0 and entry_equity is not None:
+        last_price = float(prices.iloc[-1])
         open_trip = {
             "round_trip_id": round_trip_id,
             "entry_index": entry_index,
-            "entry_cash": entry_cash,
-            "mark_value": units * float(prices.iloc[-1]),
+            "entry_equity": entry_equity,
+            "side": entry_side,
+            "mark_value": cash + units * last_price,
         }
 
     result = BacktestResult(frame=frame, trades=trades, config=cfg)

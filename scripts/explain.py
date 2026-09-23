@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ratema.backtest import BacktestConfig
 from ratema.indicators import SignalConfig
 from ratema.io_utils import DATE_COL, find_default_input, load_dataset, resolve_roles
+from ratema.metrics import cagr_from_equity
 from ratema.pipeline import run_single
 
 for _s in (sys.stdout, sys.stderr):
@@ -221,8 +222,8 @@ def main() -> int:
     print(f"  {dates.iloc[0].date()} 收于 {px.iloc[0]:.4f}")
     print(f"  {dates.iloc[-1].date()} 收于 {px.iloc[-1]:.4f}")
     print(
-        f"  15.7 年累计 {(px.iloc[-1] / px.iloc[0] - 1):+.2%}，"
-        f"年化 {(px.iloc[-1] / px.iloc[0]) ** (1 / years) - 1:+.2%}"
+        f"  {years:.1f} 年累计 {(px.iloc[-1] / px.iloc[0] - 1):+.2%}，"
+        f"年化 {cagr_from_equity(float(px.iloc[0]), float(px.iloc[-1]), years):+.2%}"
     )
     print()
     print("【净价】= 债券报价，不含应计利息。这个指数只反映「资本利得/损失」，")

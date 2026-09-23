@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -282,3 +283,64 @@ def test_sweep_composite_target(sample_panel_csv: Path, tmp_path: Path, capsys):
     df = pd.read_csv(outdir / "sweep" / "sweep_bp.csv", encoding="utf-8-sig")
     assert set(df["target"]) == {"composite"}
     assert set(df["series"]) == {"COMPOSITE"}
+
+
+@pytest.mark.parametrize("direction", ["long_only", "short_only", "long_short"])
+def test_backtest_accepts_every_direction(
+    sample_panel_csv: Path, tmp_path: Path, capsys, direction: str
+):
+    outdir = tmp_path / direction
+    code = main(
+        [
+            "backtest",
+            str(sample_panel_csv),
+            "--direction",
+            direction,
+            "--outdir",
+            str(outdir),
+            "--no-charts",
+            "--quiet",
+        ]
+    )
+    capsys.readouterr()
+    assert code == 0
+
+    payload = json.loads((outdir / "metrics.json").read_text(encoding="utf-8"))
+    assert payload["run"]["backtest_config"]["direction"] == direction
+
+    detail = pd.read_csv(outdir / "details" / "DR001.csv", encoding="utf-8-sig")
+    positions = set(detail["position"].unique())
+    if direction == "long_only":
+        assert positions <= {0, 1}
+    elif direction == "short_only":
+        assert positions <= {0, -1}
+    else:
+        assert positions <= {-1, 0, 1}
+
+
+def test_backtest_rejects_unknown_direction(sample_panel_csv: Path):
+    with pytest.raises(SystemExit):
+        main(["backtest", str(sample_panel_csv), "--direction", "sideways"])
+
+
+def test_journal_runs_for_short_direction(sample_panel_csv: Path, tmp_path: Path, capsys):
+    outdir = tmp_path / "j"
+    code = main(
+        [
+            "journal",
+            str(sample_panel_csv),
+            "--direction",
+            "short_only",
+            "--series",
+            "DR001",
+            "--outdir",
+            str(outdir),
+            "--quiet",
+        ]
+    )
+    capsys.readouterr()
+    assert code == 0
+    daily = pd.read_csv(outdir / "journal" / "journal.csv", encoding="utf-8-sig")
+    assert set(daily["position"].unique()) <= {0, -1}
+    report = (outdir / "journal" / "journal.md").read_text(encoding="utf-8")
+    assert "每日交易日志" in report

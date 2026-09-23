@@ -48,15 +48,26 @@ SIGNAL_FLAT = 0.0
 SIGNAL_LONG = 1.0
 
 
+#: 默认参数。改动这些会改变 README / 报告中的**全部既有结论**，
+#: 因此由 tests/test_cli.py::test_documented_default_tolerance_is_zero 锁定。
+#: ``DEFAULT_TOL = 0`` 表示「只有两条均线数值严格相等才算重合」——
+#: 即原始策略的字面口径。
+DEFAULT_SHORT_WINDOW = 20
+DEFAULT_LONG_WINDOW = 120
+DEFAULT_TOL_MODE = "abs"
+DEFAULT_TOL = 0.0
+DEFAULT_STD_WINDOW = 120
+
+
 @dataclass(frozen=True)
 class SignalConfig:
     """均线与重合判定参数。"""
 
-    short_window: int = 20
-    long_window: int = 120
-    tol_mode: str = "abs"
-    tol: float = 0.05
-    std_window: int = 120
+    short_window: int = DEFAULT_SHORT_WINDOW
+    long_window: int = DEFAULT_LONG_WINDOW
+    tol_mode: str = DEFAULT_TOL_MODE
+    tol: float = DEFAULT_TOL
+    std_window: int = DEFAULT_STD_WINDOW
     min_periods_short: int | None = None
     min_periods_long: int | None = None
 

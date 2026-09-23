@@ -60,6 +60,8 @@ def make_backtest_config(args: argparse.Namespace) -> BacktestConfig:
     return BacktestConfig(
         cost_bps=args.cost_bps,
         cost_mode=args.cost_mode,
+        direction=getattr(args, "direction", "long_only"),
+        initial_capital=getattr(args, "initial_capital", 1.0),
         annualization=args.annualization,
         risk_free=args.risk_free,
     )

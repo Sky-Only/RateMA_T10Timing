@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ratema.backtest import BacktestConfig
 from ratema.indicators import SignalConfig
 from ratema.io_utils import DATE_COL, find_default_input, load_dataset, resolve_roles
+from ratema.metrics import cagr_from_equity
 from ratema.pipeline import run_all, run_single
 
 ANN = 252
@@ -87,7 +88,7 @@ def cash_enhanced_equity(equity: pd.Series, position: pd.Series, rate_pct: pd.Se
 def cagr(equity: pd.Series) -> float:
     eq = equity.dropna()
     years = len(eq) / ANN
-    return float((eq.iloc[-1] / eq.iloc[0]) ** (1 / years) - 1)
+    return cagr_from_equity(float(eq.iloc[0]), float(eq.iloc[-1]), years)
 
 
 def max_dd(equity: pd.Series) -> float:

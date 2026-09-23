@@ -125,6 +125,66 @@ def calibration_table(run: RunResult) -> str:
     return pd.DataFrame(rows).set_index("指标").to_markdown()
 
 
+def format_table(
+    df: pd.DataFrame,
+    columns: list[tuple[str, str, str]],
+) -> pd.DataFrame:
+    """按 (键, 中文标签, 格式) 规格把 DataFrame 转成可读表格。
+
+    格式：``pct`` 百分比 / ``num`` 三位小数 / ``int`` 整数 /
+    ``bool`` 是·否 / ``text`` 原样。
+    """
+    out = pd.DataFrame()
+    for key, label, kind in columns:
+        if key not in df.columns:
+            continue
+        col = df[key]
+        if kind == "pct":
+            out[label] = col.map(lambda v: fmt(v, "pct"))
+        elif kind == "num":
+            out[label] = col.map(lambda v: fmt(v, "num"))
+        elif kind == "int":
+            out[label] = col.map(lambda v: fmt(v, "int"))
+        elif kind == "bool":
+            out[label] = col.map(
+                lambda v: "n/a" if v is None or pd.isna(v) else ("是" if bool(v) else "否")
+            )
+        else:
+            out[label] = col.astype("string").fillna("")
+    return out
+
+
+def annual_table(run: RunResult, *, per_indicator: bool = False) -> str:
+    """分年度收益 / 胜率 / 与基准对比。
+
+    ``per_indicator=False``（默认）时对多个指标取均值（综合视角）；
+    ``True`` 时每个指标单独列示。
+    """
+    from .metrics import ANNUAL_COLUMNS, annual_breakdown, mean_annual
+
+    if per_indicator:
+        frames = []
+        for res in run.results:
+            t = annual_breakdown(res.frame, res.backtest.trades_frame)
+            t.insert(0, "指标", res.series)
+            frames.append(t)
+        if not frames:
+            return "_无分年度数据_"
+        combined = pd.concat(frames, ignore_index=True)
+        cols = [("指标", "指标", "text"), *ANNUAL_COLUMNS]
+        return format_table(combined, cols).to_markdown(index=False)
+
+    tables = [annual_breakdown(res.frame, res.backtest.trades_frame) for res in run.results]
+    aggregated = mean_annual(tables)
+    if aggregated.empty:
+        return "_无分年度数据_"
+
+    table = format_table(aggregated, ANNUAL_COLUMNS).to_markdown(index=False)
+    if len(run.results) > 1:
+        table += f"\n\n> 各列为该年 {len(run.results)} 个指标的等权平均值。"
+    return table
+
+
 def render_markdown(run: RunResult) -> str:
     cfg = run.signal_cfg
     bt = run.backtest_cfg
@@ -214,6 +274,28 @@ def render_markdown(run: RunResult) -> str:
     lines.append(summary_table(run))
     lines.append("")
     lines.append(f"> 基准为买入并持有 `{run.index_col}`（首日按含成本价建仓）。")
+    lines.append("")
+    lines.append("### 4.1 分年度收益与胜率")
+    lines.append("")
+    lines.append("胜率有四个口径，含义不同，**不要混用**：")
+    lines.append("")
+    lines.append("| 口径 | 定义 |")
+    lines.append("| --- | --- |")
+    lines.append("| 策略日胜率 | 策略当日收益 > 0 的天数占比 |")
+    lines.append("| 基准日胜率 | 基准当日收益 > 0 的天数占比 |")
+    lines.append("| 相对胜率 | 策略当日收益**跑赢基准**的天数占比 |")
+    lines.append("| 交易胜率 | 已平仓的往返交易中盈利的比例 |")
+    lines.append("")
+    lines.append(annual_table(run))
+    lines.append("")
+    lines.append(
+        "> 注：策略空仓时当日收益恰为 0，不计入「日胜率」的分子，因此**策略日胜率通常低于基准**。"
+    )
+    lines.append(
+        "> 这类趋势型策略的典型画像是「低胜率 + 高盈亏比」——靠少数大跌日避开亏损取胜，"
+        "而非靠多数交易日占优。"
+    )
+    lines.append("> 判断有效性应看**相对胜率、超额收益与回撤**，而不是日胜率。")
     lines.append("")
     lines.append("## 5. 重合度阈值标定")
     lines.append("")

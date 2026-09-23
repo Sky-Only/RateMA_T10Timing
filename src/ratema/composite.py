@@ -29,6 +29,7 @@ import pandas as pd
 
 from .backtest import (
     BacktestConfig,
+    BacktestResult,
     build_strategy_frame,
     run_backtest,
     run_benchmark,
@@ -161,6 +162,9 @@ class CompositeResult:
 
     composite_metrics: dict[str, Any] = field(default_factory=dict)
 
+    composite_backtest: BacktestResult | None = None
+    """综合信号的逐笔回测结果（含成交流水，供交易日志使用）。"""
+
     portfolio_frame: pd.DataFrame = field(default_factory=pd.DataFrame)
     """步骤 2b：等权组合（5 份资金各跟一个信号）的逐日明细。"""
 
@@ -288,11 +292,19 @@ def run_composite(
     sub_dates = dates_all.loc[mask].reset_index(drop=True)
     sub_prices = prices_all.loc[mask].reset_index(drop=True)
 
+    # 信号帧也必须按同一区间裁剪（此前只裁了价格，
+    # 导致带 --start/--end 时长度不等、直接报错）
     ready_mask = sig_eff.notna().to_numpy()
     ready_frame = signal_frame.loc[ready_mask].reset_index(drop=True)
-    ready_dates = pd.Series(pd.to_datetime(ready_frame["date"])).reset_index(drop=True)
+    ready_dates = pd.to_datetime(ready_frame["date"]).reset_index(drop=True)
+    in_window = (ready_dates >= first_date) & (ready_dates <= last_date)
+    ready_frame = ready_frame.loc[in_window].reset_index(drop=True)
+    ready_dates = ready_dates.loc[in_window].reset_index(drop=True)
+
     # 显式校验对齐，避免长度不符时静默截断造成信号与日期错位
-    if not ready_dates.equals(sub_dates):
+    if len(ready_dates) != len(sub_dates) or not np.array_equal(
+        ready_dates.to_numpy(), sub_dates.to_numpy()
+    ):
         raise ValueError(
             f"综合信号与价格序列未对齐：信号 {len(ready_dates)} 行 / 价格 {len(sub_dates)} 行"
         )
@@ -431,6 +443,7 @@ def run_composite(
         signal_frame=signal_frame,
         composite_frame=composite_frame,
         composite_metrics=composite_metrics,
+        composite_backtest=bt,
         portfolio_frame=portfolio_frame,
         portfolio_metrics=portfolio_metrics,
         mode=mode,

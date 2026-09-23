@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ratema.backtest import BacktestConfig
 from ratema.indicators import SignalConfig
 from ratema.io_utils import find_default_input, load_dataset, resolve_roles
+from ratema.metrics import cagr_from_equity
 from ratema.pipeline import run_single
 
 ANN = 252
@@ -40,7 +41,7 @@ for _s in (sys.stdout, sys.stderr):
 def stats_from_returns(ret: np.ndarray) -> dict[str, float]:
     eq = np.cumprod(1.0 + ret)
     years = len(ret) / ANN
-    cagr = float(eq[-1] ** (1 / years) - 1)
+    cagr = cagr_from_equity(1.0, float(eq[-1]), years)
     vol = float(np.std(ret, ddof=1) * np.sqrt(ANN))
     sharpe = (
         float(np.mean(ret) / np.std(ret, ddof=1) * np.sqrt(ANN)) if np.std(ret, ddof=1) else np.nan

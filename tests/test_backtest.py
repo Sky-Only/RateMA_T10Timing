@@ -213,3 +213,25 @@ def test_signal_to_position_direction_is_economically_correct():
     )
     assert res.frame["position"].tolist() == [0, 1, 1, 0]
     assert [t.action for t in res.trades] == [BUY, SELL]
+
+
+@pytest.mark.parametrize("bad", [0.2, -0.6, 2.0, 0.5])
+def test_fractional_signal_is_rejected(bad: float):
+    """引擎只支持二元多空仓；把分数直接当仓位用必须报错，而不是被静默忽略。
+
+    回归背景：把综合打分 ``score``（-1 / -0.6 / ... / +1）直接喂给
+    ``run_backtest`` 时，引擎只认 ±1，其余取值被忽略，
+    结果看起来正常（甚至能算出年化和夏普）但完全无意义。
+    """
+    prices = pd.Series([100.0, 101.0, 102.0])
+    signals = pd.Series([1.0, bad, 1.0])
+    with pytest.raises(ValueError, match="只接受"):
+        run_backtest(_dates(3), prices, signals)
+
+
+def test_zero_signal_is_allowed_and_means_no_action():
+    """0 表示「无观点」，应等同于不操作，而不是报错。"""
+    prices = pd.Series([100.0, 100.0, 100.0])
+    res = run_backtest(_dates(3), prices, pd.Series([0.0, 0.0, 0.0]), BacktestConfig(cost_bps=0.0))
+    assert res.frame["position"].tolist() == [0, 0, 0]
+    assert not res.trades

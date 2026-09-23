@@ -24,14 +24,30 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from .metrics import TRADING_DAYS
+from .metrics import ANNUAL_COLUMNS, TRADING_DAYS, annual_breakdown, cagr_from_equity
 
-Action = Literal["建仓", "平仓", "持有", "空仓", "换向"]
+Action = Literal["建仓", "平仓", "持有", "空仓", "建空", "平空", "持空", "多翻空", "空翻多"]
 
 ACTION_OPEN = "建仓"
 ACTION_CLOSE = "平仓"
 ACTION_HOLD = "持有"
 ACTION_FLAT = "空仓"
+#: 做空相关动作（direction != long_only 时才会出现）
+ACTION_OPEN_SHORT = "建空"
+ACTION_CLOSE_SHORT = "平空"
+ACTION_HOLD_SHORT = "持空"
+ACTION_TO_SHORT = "多翻空"
+ACTION_TO_LONG = "空翻多"
+
+#: 所有「改变了仓位」的动作（即动作流水要记录的行）
+CHANGE_ACTIONS: tuple[str, ...] = (
+    ACTION_OPEN,
+    ACTION_CLOSE,
+    ACTION_OPEN_SHORT,
+    ACTION_CLOSE_SHORT,
+    ACTION_TO_SHORT,
+    ACTION_TO_LONG,
+)
 
 DAILY_COLUMNS = [
     "date",
@@ -80,6 +96,7 @@ class Journal:
     daily: pd.DataFrame = field(default_factory=pd.DataFrame)
     events: pd.DataFrame = field(default_factory=pd.DataFrame)
     summary: dict[str, Any] = field(default_factory=dict)
+    annual: pd.DataFrame = field(default_factory=pd.DataFrame)
     series: str = ""
     index_col: str = ""
 
@@ -92,14 +109,24 @@ class Journal:
 
 
 def _classify(prev: float, cur: float) -> str:
-    """把仓位变化翻译成动作。"""
+    """把仓位变化翻译成动作（支持 多头 / 空仓 / 空头 三态）。"""
     if prev == cur:
-        return ACTION_HOLD if cur > 0 else ACTION_FLAT
+        if cur > 0:
+            return ACTION_HOLD
+        if cur < 0:
+            return ACTION_HOLD_SHORT
+        return ACTION_FLAT
     if prev == 0 and cur > 0:
         return ACTION_OPEN
     if prev > 0 and cur == 0:
         return ACTION_CLOSE
-    return "换向"
+    if prev == 0 and cur < 0:
+        return ACTION_OPEN_SHORT
+    if prev < 0 and cur == 0:
+        return ACTION_CLOSE_SHORT
+    if prev > 0 and cur < 0:
+        return ACTION_TO_SHORT
+    return ACTION_TO_LONG
 
 
 def _num(df: pd.DataFrame, col: str) -> pd.Series:
@@ -116,6 +143,7 @@ def build_journal(
     index_col: str,
     signal_col: str = "signal_eff",
     extra_cols: tuple[str, ...] = ("score", "n_long", "n_short"),
+    trades: pd.DataFrame | None = None,
 ) -> Journal:
     """由一条策略的逐日明细构造日志。
 
@@ -168,7 +196,7 @@ def build_journal(
     daily["actionable_signal"] = signal.shift(1).fillna(0.0).astype(int)
 
     # ---- 动作事件 -------------------------------------------------------- #
-    ev = daily[daily["action"].isin([ACTION_OPEN, ACTION_CLOSE, "换向"])].copy()
+    ev = daily[daily["action"].isin(CHANGE_ACTIONS)].copy()
     if len(ev):
         # 记录「上一状态持续了多少个交易日」
         idx = list(ev.index)
@@ -188,7 +216,8 @@ def build_journal(
     n = len(daily)
     years = n / TRADING_DAYS
     total_return = float(daily["equity"].iloc[-1]) - 1.0
-    in_market = float((daily["position"] == 1).mean())
+    # 非空仓天数占比（空头也算「有仓位」，不能只数 == 1）
+    in_market = float((daily["position"] != 0).mean())
     summary = {
         "series": series,
         "index_col": index_col,
@@ -198,15 +227,24 @@ def build_journal(
         "years": years,
         "n_open": int((daily["action"] == ACTION_OPEN).sum()),
         "n_close": int((daily["action"] == ACTION_CLOSE).sum()),
-        "n_switch": int((daily["action"] == "换向").sum()),
+        "n_switch": int(daily["action"].isin([ACTION_TO_SHORT, ACTION_TO_LONG]).sum()),
+        "n_open_short": int((daily["action"] == ACTION_OPEN_SHORT).sum()),
+        "n_close_short": int((daily["action"] == ACTION_CLOSE_SHORT).sum()),
+        "n_days_short": int((daily["position"] == -1).sum()),
         "n_hold": int((daily["action"] == ACTION_HOLD).sum()),
+        "n_hold_short": int((daily["action"] == ACTION_HOLD_SHORT).sum()),
         "n_flat": int((daily["action"] == ACTION_FLAT).sum()),
         # 按「当日收盘仓位」统计，与动作次数区分开：
-        # 建仓日收盘已有仓位，平仓日收盘已空仓
-        "n_days_in_market": int((daily["position"] == 1).sum()),
+        # 建仓日收盘已有仓位，平仓日收盘已空仓。
+        # n_days_in_market 用 != 0 统计，这样做空方向也有值
+        # （曾经用 == 1，导致 short_only 显示「持仓 0 天」却又有 40% 持仓占比）
+        "n_days_in_market": int((daily["position"] != 0).sum()),
         "n_days_flat": int((daily["position"] == 0).sum()),
+        "n_days_long": int((daily["position"] == 1).sum()),
         "time_in_market": in_market,
-        "cagr": (1.0 + total_return) ** (1.0 / years) - 1.0 if years > 0 else float("nan"),
+        "cagr": cagr_from_equity(
+            float(daily["equity"].iloc[0]), float(daily["equity"].iloc[-1]), years
+        ),
         "total_return": total_return,
         "final_equity": float(daily["equity"].iloc[-1]),
         "final_benchmark": float(daily["benchmark_equity"].iloc[-1]),
@@ -216,12 +254,54 @@ def build_journal(
         "total_cost": float(daily["cost_paid"].sum()),
         "avg_holding_days": (float(ev["days_in_prev_state"].mean()) if len(ev) else float("nan")),
     }
-    return Journal(daily=daily, events=events, summary=summary, series=series, index_col=index_col)
+    trades = trades if trades is not None else pd.DataFrame()
+    try:
+        annual = annual_breakdown(frame, trades if len(trades) else None)
+    except ValueError:
+        annual = pd.DataFrame()
+
+    return Journal(
+        daily=daily,
+        events=events,
+        summary=summary,
+        annual=annual,
+        series=series,
+        index_col=index_col,
+    )
 
 
 # --------------------------------------------------------------------------- #
 # 渲染
 # --------------------------------------------------------------------------- #
+def _action_summary(s: dict[str, Any]) -> str:
+    """按方向自适应地汇总动作次数（做多/做空分开列）。"""
+    parts: list[str] = []
+    if s.get("n_open") or s.get("n_close"):
+        parts.append(f"建多 {s['n_open']}、平多 {s['n_close']}")
+    if s.get("n_open_short") or s.get("n_close_short"):
+        parts.append(f"建空 {s['n_open_short']}、平空 {s['n_close_short']}")
+    if s.get("n_switch"):
+        parts.append(f"换向 {s['n_switch']}")
+    total = (
+        s.get("n_open", 0)
+        + s.get("n_close", 0)
+        + s.get("n_open_short", 0)
+        + s.get("n_close_short", 0)
+        + s.get("n_switch", 0)
+    )
+    if not parts:
+        parts.append("无")
+    return "、".join(parts) + f"（合计 {total} 次）"
+
+
+def _position_label(pos: int) -> str:
+    if pos > 0:
+        return "持多"
+    if pos < 0:
+        return "持空"
+    return "空仓"
+
+
 def render_journal_markdown(
     journal: Journal,
     *,
@@ -245,18 +325,25 @@ def render_journal_markdown(
     )
     lines.append(f"| 累计 / 年化 | {s['total_return']:+.2%} / {s['cagr']:+.2%} |")
     lines.append(f"| 最大回撤 | {s['max_drawdown']:.2%} |")
-    lines.append(
-        f"| 动作次数 | 建仓 {s['n_open']}、平仓 {s['n_close']}"
-        + (f"、换向 {s['n_switch']}" if s.get("n_switch") else "")
-        + f"（合计 {s['n_open'] + s['n_close'] + s.get('n_switch', 0)} 次） |"
-    )
-    lines.append(
-        f"| 持仓 / 空仓天数 | {s['n_days_in_market']} / {s['n_days_flat']}"
-        f"（持仓占比 {s['time_in_market']:.1%}） |"
-    )
+    lines.append(f"| 动作次数 | {_action_summary(s)} |")
+    holding = f"{s['n_days_in_market']} / {s['n_days_flat']}"
+    if s.get("n_days_short"):
+        holding += f"（其中多头 {s['n_days_long']}、空头 {s['n_days_short']}）"
+    lines.append(f"| 持仓 / 空仓天数 | {holding}（持仓占比 {s['time_in_market']:.1%}） |")
     lines.append(f"| 平均持有天数 | {s['avg_holding_days']:.1f} |")
     lines.append(f"| 累计交易成本 | {s['total_cost']:.4f}（占初始资金） |")
     lines.append("")
+
+    if journal.annual is not None and not journal.annual.empty:
+        lines.append("## 分年度收益与胜率（对比基准）")
+        lines.append("")
+        from .render import format_table
+
+        lines.append(format_table(journal.annual, ANNUAL_COLUMNS).to_markdown(index=False))
+        lines.append("")
+        lines.append("> 「策略日胜率」低于「基准日胜率」是正常的：空仓日收益为 0，不计入胜率分子。")
+        lines.append("> 本类策略靠「低胜率 + 高盈亏比」取胜，应看相对胜率与超额收益。")
+        lines.append("")
 
     lines.append("## 动作流水（建仓 / 平仓）")
     lines.append("")
@@ -308,7 +395,7 @@ def _daily_table(daily: pd.DataFrame) -> str:
                 "当日信号": f"{int(r['signal']):+d}",
                 "执行依据": f"{int(r['actionable_signal']):+d}",
                 "票数(多/空)": _votes(r),
-                "仓位": "持有" if r["position"] == 1 else "空仓",
+                "仓位": _position_label(int(r["position"])),
                 "动作": r["action"],
                 "收盘": f"{r['close']:.4f}",
                 "当日": _pct(r["daily_return"]),
@@ -359,6 +446,11 @@ def write_journal(
     p = outdir / "journal_events.csv"
     events.to_csv(p, index=False, encoding="utf-8-sig")
     written.append(str(p))
+
+    if journal.annual is not None and not journal.annual.empty:
+        p = outdir / "journal_annual.csv"
+        journal.annual.to_csv(p, index=False, encoding="utf-8-sig")
+        written.append(str(p))
 
     md = render_journal_markdown(journal, tail=tail, title=title)
     p = outdir / "journal.md"

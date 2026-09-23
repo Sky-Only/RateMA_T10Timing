@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 
 from . import __version__
-from .backtest import COST_MODES
+from .backtest import COST_MODES, DIRECTION_HELP, DIRECTIONS
 from .composite import COMPOSITE_MODES, MODE_HELP, VOTE_SOURCE_HELP, VOTE_SOURCES
 from .daily import CONSENSUS_HELP, CONSENSUS_MODES
 from .indicators import TOL_MODE_HELP, TOL_MODES, SignalConfig
@@ -102,6 +102,19 @@ def add_backtest_args(parser: argparse.ArgumentParser) -> None:
         choices=COST_MODES,
         default="per_side",
         help="per_side: 单边各收 cost-bps（默认）；round_trip: cost-bps 为往返合计",
+    )
+    parser.add_argument(
+        "--direction",
+        choices=DIRECTIONS,
+        default="long_only",
+        help="交易方向，默认 long_only。"
+        + "；".join(f"{k}: {v}" for k, v in DIRECTION_HELP.items()),
+    )
+    parser.add_argument(
+        "--initial-capital",
+        type=float,
+        default=1.0,
+        help="初始资金，默认 1.0。仅影响权益曲线与交易的名义金额，不影响收益率",
     )
     parser.add_argument("--annualization", type=int, default=252, help="年化交易日数")
     parser.add_argument("--risk-free", type=float, default=0.0, help="年化无风险利率")

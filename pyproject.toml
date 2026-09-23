@@ -71,6 +71,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "SIM117", "PTH"]
 "scripts/*" = ["E402", "PTH"]
+# run.py / compare_directions.py 刻意把 CONFIG 放在文件最前面，
+# import 因此必须在配置块之后
+"run.py" = ["E402"]
+"compare_directions.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"
