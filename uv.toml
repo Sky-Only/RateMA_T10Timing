@@ -1,0 +1,5 @@
+# 把 uv 的缓存目录放在项目内部。
+# 好处：在受限环境（只读 HOME / 沙箱 / CI 容器）里也能直接 `uv run`，
+# 不需要额外设置 UV_CACHE_DIR 环境变量。
+# 该目录已在 .gitignore 中忽略，不会进版本库。
+cache-dir = ".uv-cache"

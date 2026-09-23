@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 工具缓存（uv 缓存在 uv.toml 里指向 .uv-cache，保证受限环境也能跑）
+.uv-cache/
+.pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
+.ruff_cache/
+.mypy_cache/
+build/
+
+# 产出（可随时用 `uv run ratema all` 重新生成）
+output/
+data/csv/
+
+# Excel 临时文件
+~$*.xlsx

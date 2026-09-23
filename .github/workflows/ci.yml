@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 把 uv 缓存放在工作目录内，避免依赖 runner 的 HOME 可写
+  UV_CACHE_DIR: .uv-cache
+
+jobs:
+  quality:
+    name: lint / format / types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy
+
+  test:
+    name: test (py${{ matrix.python }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --python ${{ matrix.python }}
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  pipeline:
+    name: end-to-end pipeline
+    runs-on: ubuntu-latest
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: CI 需要中文字体来渲染图表
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - name: Run full pipeline
+        run: uv run ratema all
+
+      - name: Assert key artifacts exist
+        run: |
+          set -e
+          for f in \
+            output/report.md \
+            output/summary.csv \
+            output/metrics.json \
+            output/evaluation_window.csv \
+            output/composite_report.md \
+            output/composite_summary.csv \
+            output/journal/journal.csv \
+            output/journal/journal_events.csv \
+            output/journal/journal.md \
+            output/charts/01_equity_curves.png \
+            output/charts/08_composite.png \
+            output/sweep/sweep_abs.csv
+          do
+            test -s "$f" || { echo "缺少或为空: $f"; exit 1; }
+          done
+          echo "全部产物就绪"
+
+      - name: Cross-check engine against independent implementation
+        run: uv run python scripts/cross_check.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ratema-output
+          path: output/
+          retention-days: 14
