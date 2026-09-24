@@ -84,6 +84,13 @@ class SignalConfig:
             raise ValueError(f"tol 必须是非负有限数，收到 {self.tol!r}")
         if self.tol_mode == "q" and not 0.0 <= self.tol <= 1.0:
             raise ValueError(f"tol_mode='q' 时 tol 必须落在 [0, 1]，收到 {self.tol!r}")
+        if self.tol_mode == "rel" and self.tol > 1.0:
+            # rel 的 tol 是**比例**：想要 3% 要写 0.03，不是 3。
+            # 写成 3 意味着容差 = 利率水平的 300%，会把几乎每一天都判成重合，
+            # 信号实际上被冻住 —— 这种量级错误必须当场拦下，不能静默跑完。
+            raise ValueError(
+                f"tol_mode='rel' 时 tol 是比例（3% 要写 0.03），不应超过 1.0，收到 {self.tol!r}"
+            )
         if self.std_window < 2:
             raise ValueError("std_window 必须 >= 2")
         for field_name in ("min_periods_short", "min_periods_long"):

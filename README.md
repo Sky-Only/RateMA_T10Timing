@@ -97,21 +97,86 @@ Windows 下直接**双击 `run.bat`** 即可（它调用 `run.py`，参数以 `r
 ### 方向对比图（独立入口）
 
 `compare_directions.py` 把**同一套信号**在三种交易方向下的净值，和买入持有基准
-画到**同一张图**上。默认出 1 + N 张（N = 利率指标个数）：
+画到**同一张图**上。默认出 2 + N 张（N = 利率指标个数）：
 
-- `compare_directions.png` —— 五利率**等权综合**信号
+- `compare_directions.png` —— 五利率**综合信号**（五票合成一个仓位）
+- `compare_portfolio.png` —— 五利率**等权组合**（五份资金各跟一个信号）
 - `compare_directions_DR001.png`、`_R001.png`、`_DR007.png`、`_R007.png`、
   `_M0017139.png` —— **每个利率单独**一张，用的是该利率自己的信号
+- 每个主图配一张 `*_drawdowns.png` 回撤附图（可用 `--no-drawdown` 关掉）
+- `compare_annual_returns.png` / `compare_annual_returns_portfolio.png` —— **年度收益热力图**
+  （仿 `charts/05_annual_returns.png` 的样式：绿=赚 红=亏，行=方向，列=年份）
+- `compare_annual_indicator_<方向>.png` —— 同款热力图，**行=等权综合/各利率/基准**（每个方向一张）
+- `compare_annual_dd_<方向>.png` —— **年度最大回撤热力图**（三张），
+  排版与上面的收益图完全一致（同 8 行、同 16 列），可直接并排对照。
+  配色改用 `[-最深, 0]`：**无回撤 = 绿、最深 = 红** —— 回撤全是非正数，
+  沿用收益图那种以 0 为中心的发散色带会白白浪费绿色半幅、把色差压掉一半。
+  三张图**共用同一个颜色下限**，深浅可比
+- `compare_annual_return_dd.csv` / `.md` —— 上面两张热力图的数据
+  （年度收益 + 年内最大回撤，三方向 × 8 口径 × 16 年）。CSV 是长表，便于 Excel 透视
+- `compare_monthly_<年份>.png` —— **逐月收益热力图**，与上面同样的 8 行，列 = 1~12 月
+  （15 年 × 12 月 ≈ 184 列塞不进一张可读的图，故按年拆成多个文件；
+  各年文件**共用同一颜色范围**，深浅可比）
+- `compare_monthly.csv` —— 逐月收益全量矩阵（8 行 × 184 列），便于自己画图或查数
+
+单文件版共三种，**横轴一律是月份、纵轴一律是策略种类**（8 行）：
+
+| 文件 | 排布 |
+| --- | --- |
+| `compare_monthly_by_strategy.png` | 一张图：8 策略 × 全部 184 个月，横向拉通（年份用竖分隔线 + 年标签）。**每格是严格的正方形**，所以整图约 23:1 的长条 |
+| `compare_monthly_years_panel.png` | 一年一个面板，16 个面板**竖排**（每个面板 8 策略 × 12 月） |
+| `compare_monthly_years_row.png` | 一年一个面板，16 个面板**横排**（所有年份在同一行，纵轴只标一次策略名） |
 
 ```bash
-uv run python compare_directions.py                    # 综合 + 每个利率各一张
-uv run python compare_directions.py 5bp方案             # 换输出文件夹名
+uv run python compare_directions.py                    # 两种曲线 + 每个利率各一张
+uv run python compare_directions.py --curve portfolio   # 只出等权组合那一套
+uv run python compare_directions.py --curve signal      # 只出综合信号那一套
 uv run python compare_directions.py --only-indicators   # 只要每个利率那几张
-uv run python compare_directions.py --only-composite    # 只要综合那一张
+uv run python compare_directions.py --only-composite    # 只要综合那两张
 uv run python compare_directions.py --rates DR007,R007  # 只出指定利率
 uv run python compare_directions.py --log               # 纵轴取对数
-uv run python compare_directions.py --indicator-drawdown # 每个利率也出回撤附图
 ```
+
+年度收益热力图可在 `CONFIG` 里调：
+
+```python
+"annual_heatmap": True,
+"annual_heatmap_rows": "both",       # "direction" / "indicator" / "both"
+"annual_return_dd_data": True,       # 导出 年度收益+年内最大回撤 的 CSV/MD
+"annual_dd_heatmap": True,           # 三张 年度最大回撤 热力图
+
+"monthly_heatmap": True,
+"monthly_direction": "long_short",   # 逐月表看哪个方向（三个方向都出会有 48 个文件）
+"monthly_years": None,               # None=全部；也可写 [2024, 2025] 或 "2020-2023"
+"monthly_layout": "all",             # "strip" 一张图 / "panel" 年面板竖排 / "row" 年面板横排 / "all"
+"monthly_cell_inch": 0.15,           # 一张图那版的单格边长（英寸）；格子是正方形，调大即整图等比变长
+```
+
+热力图的收益口径与 `charts/05_annual_returns.png` 一致：**期末净值环比**
+（首年 / 首月都从评估起点起算），因此跨年、跨月的跳空都计入新一期，首期不是整期也不失真。
+测试里与本项目的 `ratema.charts.annual_returns` 做了逐点交叉验证，
+并断言**年内逐月复利必须等于该年的年度收益**（两者同源，偏差 < 1e-12）。
+
+`--indicator` 那张热力图（以及 `compare_by_rate.md`）里，**两个综合口径都在场**，
+标签分别是：
+
+| 行标签 | 含义 | 多空双向年化 |
+| --- | --- | --- |
+| 打分综合 | 五票合成**一个**仓位，每天要么满仓要么空仓 | 3.55% |
+| 等权组合 | **五份资金**各跟一个信号后等权平均，仓位比例连续 | 2.75% |
+| DR001 … M0017139 | 该利率**单独**的策略（N=1 时两种综合口径等价，故只列一次） | 2.16%~3.09% |
+| 基准 买入持有 | 期初买入并持有 | 1.09% |
+
+> 早期版本这一行标签写作「等权综合」，既能读成「等权组合」也能读成「等权打分」，
+> 容易让人以为打分综合没有画。现已改为「打分综合」，并把等权组合单独补成一行。
+
+**「综合信号」与「等权组合」的区别**（两张图的曲线不一样，别混用）：
+
+| | 综合信号 | 等权组合 |
+| --- | --- | --- |
+| 含义 | 五票合成**一个**决策 | **五份资金**各跟一个信号 |
+| 仓位 | 每天要么满仓要么空仓 | 连续（持有票数 / N） |
+| 曲线 | 更陡、回撤更大 | 更平滑、回撤更小 |
 
 每张图的四条曲线：**多空双向**（主线）、**仅做多**、**仅做空**、**基准 买入持有**。
 另外产出 `compare_by_rate.csv` / `.md` —— 按「指标 × 方向」排列的对照表，
@@ -121,10 +186,16 @@ uv run python compare_directions.py --indicator-drawdown # 每个利率也出回
 **单利率图与综合图走的是同一条代码路径**：单利率只是把「只含该指标一个元素」的
 列表喂给同一套综合逻辑。N=1 时 `score = ±1`，与「该指标自己的 signal_eff」逐日等价，
 所以不需要另写一套逻辑，也自动继承了同一套对齐校验（测试里逐指标 × 逐方向
-与 `run_single` 比对，误差为 0）。
+与 `run_single` 比对，误差为 0）。N=1 时等权组合与综合信号是同一条曲线，
+因此单利率只出一套图，不重复出 portfolio。
 
 三条策略曲线共用相同的信号与相同的评估区间（代码里会显式校验对齐并直接报错），
 所以图上的差异**只来自交易方向**，能直接看出「做空那一段贡献了多少」。
+
+> **注意**：等权组合是对各指标的净值曲线求平均，而净值曲线本身依赖交易方向，
+> 所以每个方向都必须单独跑一遍单指标回测。若三个方向共用同一份回测结果，
+> 等权组合会在三个方向下变成同一条曲线——图看起来正常，其实是错的。
+> 代码里对此有显式校验，测试也专门盯住这一点。
 
 ---
 

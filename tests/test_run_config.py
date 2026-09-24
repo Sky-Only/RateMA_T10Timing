@@ -180,6 +180,13 @@ def test_validate_rejects_bad_tol_mode(run_mod, cfg):
         run_mod.validate({**cfg, "tol_mode": "ppt"})
 
 
+def test_validate_rejects_rel_tol_as_percent(run_mod, cfg):
+    """rel 模式下把比例写成百分数（0.03 写成 3）必须被拦下。"""
+    run_mod.validate({**cfg, "tol_mode": "rel", "tol": 0.03})  # 合法
+    with pytest.raises(SystemExit):
+        run_mod.validate({**cfg, "tol_mode": "rel", "tol": 3.0})
+
+
 def test_validate_rejects_nonpositive_capital(run_mod, cfg):
     with pytest.raises(SystemExit):
         run_mod.validate({**cfg, "initial_capital": 0.0})

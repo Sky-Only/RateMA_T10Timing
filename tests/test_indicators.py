@@ -182,6 +182,23 @@ def test_config_validation():
     with pytest.raises(ValueError):
         SignalConfig(std_window=1)
     SignalConfig(tol_mode="q", tol=0.9)  # 合法
+    SignalConfig(tol_mode="rel", tol=1.0)  # 上界，合法
+
+
+def test_rel_tol_is_a_ratio_not_a_percent():
+    """rel 的 tol 是**比例**：3% 要写 0.03。
+
+    写成 3 意味着容差 = 利率水平的 300%，几乎每天都会被判成重合、信号实质冻结。
+    这种量级错误必须在构造时就拦下，否则会静默跑出一份「看着正常」的结果。
+    """
+    SignalConfig(tol_mode="rel", tol=0.03)  # 合法：3%
+    with pytest.raises(ValueError, match="rel"):
+        SignalConfig(tol_mode="rel", tol=3.0)
+    with pytest.raises(ValueError, match="rel"):
+        SignalConfig(tol_mode="rel", tol=1.5)
+    # bp/abs 模式不受此限制（它们的 tol 不是比例）
+    SignalConfig(tol_mode="bp", tol=5.0)
+    SignalConfig(tol_mode="abs", tol=0.05)
 
 
 def test_describe_tol_is_human_readable():
